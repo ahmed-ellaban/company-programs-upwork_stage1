@@ -1,6 +1,4 @@
-import json
 import random
-import re
 from urllib.parse import urljoin
 
 import requests
@@ -53,16 +51,16 @@ class AmazonSpider(scrapy.Spider):
             for term in f.readlines():
                 term = term.lower().strip()
                 self.skipped_list.add(term)
-            #     prompt = RULES.get('RULE_5_6_9').format(term).strip()
-            #     data = get_gpt_payload(prompt)
-            #
-            #     yield scrapy.Request(
-            #         url=API_URL_GPT,
-            #         method='POST',
-            #         headers=GPT_HEADERS,
-            #         body=json.dumps(data),
-            #         meta={'search_term': term}
-            #     )
+                #     prompt = RULES.get('RULE_5_6_9').format(term).strip()
+                #     data = get_gpt_payload(prompt)
+                #
+                #     yield scrapy.Request(
+                #         url=API_URL_GPT,
+                #         method='POST',
+                #         headers=GPT_HEADERS,
+                #         body=json.dumps(data),
+                #         meta={'search_term': term}
+                #     )
                 api_url = f"https://completion.amazon.com/api/2017/suggestions?limit=11&prefix={term}&suggestion-type=WIDGET&suggestion-type=KEYWORD&page-type=Search&alias=aps&site-variant=desktop&version=3&event=onkeypress&wc=&lop=en_US&last-prefix=ceramic%20fire%20balls&avg-ks-time=7481&fb=1&mid=ATVPDKIKX0DER&plain-mid=1&client-info=search-ui"
                 self.logs[term] = {}
                 yield scrapy.Request(api_url, meta={'term': term},
@@ -147,72 +145,66 @@ class AmazonSpider(scrapy.Spider):
             self.save_logs()
             return
         suggestions = response.meta.get('suggestions')
-        total_results = response.css('div[class="a-section a-spacing-small a-spacing-top-small"] > span::text').get('')
+        # getting the total results of the result page using regex
+        total_results = get_number_of_results(response.xpath('//span[contains(text(),"result")]/text()').get(''))
+        if 0 < total_results <= 400:
+            unique_urls = set()
+            product_listing = []
+            for product in response.xpath("//div[@data-cy='title-recipe' and not(contains(., 'Sponsored'))]"):
+                bought_items = product.css("span.a-size-base:contains('bought')::text").get('')
+                bought_value = ''
+                if bought_items:
+                    bought_value = bought_items.split()[0].rstrip('+')
+                    bought_value = convert_abbreviated_number(bought_value)
 
-        total_results = total_results.replace(',', '')
-        total_results = re.findall(r'\d+', total_results)
-        if total_results:
-            total_results = int(total_results[-1])
-            if total_results <= 400:
+                price = float(product.css(
+                    "span.a-price > span.a-offscreen::text, span:contains('No featured offers available') + br +span.a-color-base::text").get(
+                    '0').lstrip('$'))
+
+                # TODO discover why we will have duplicate urls in the same result page!!!!!!!!!!!!!!!!
+
+                url = product.css("h2 > a::attr(href)").get()
+                if url in unique_urls:
+                    continue
+                unique_urls.add(url)
+                product_listing.append({
+                    "url": response.urljoin(url),
+                    'name': product.css("h2 > a > span::text").get('').strip().lower(),
+                    'bought_values': bought_value,
+                    'price': price,
+                    'monthly_sale': bought_value * price if bought_value and price else 0
+                })
+
+            if product_listing:
+                # storing the data of all products in meta
                 min_sale = minimum_total_sales_of_search_group_for_results(total_results)
-                meta = {'term': term, 'total_results': total_results, 'min_sale': min_sale,
-                        'searched_term': suggestions}
+
                 self.logs[term]['Rule 2'] = 'Passed'
                 self.save_logs()
+                prompt = RULES.get('RULE_3').format(term, suggestions).strip()
 
-                unique_urls = set()
-                product_listing = []
-                for product in response.css('div[class="a-section a-spacing-small puis-padding-left-small puis-padding-right-small"],  div[data-csa-c-type="item"]'):
-                    if product.css('span:contains("Sponsored")'):
-                        continue
-
-                    bought_items = product.css("span.a-size-base:contains('bought')::text").get('')
-                    bought_value = ''
-                    if bought_items:
-                        bought_value = bought_items.split()[0].rstrip('+')
-                        bought_value = convert_abbreviated_number(bought_value)
-
-                    price = float(product.css("span.a-price > span.a-offscreen::text, span:contains('No featured offers available') + br +span.a-color-base::text").get('0').lstrip('$'))
-
-                    url = product.css("h2 > a::attr(href)").get()
-                    if url in unique_urls:
-                        continue
-                    unique_urls.add(url)
-                    product_listing.append({
-                        "url": response.urljoin(url),
-                        'name': product.css("h2 > a > span::text").get('').strip().lower(),
-                        'bought_values': bought_value if bought_value else '',
-                        'price': price,
-                        'monthly_sale': bought_value * price if bought_value and price else 0
-                    })
-
-                if product_listing:
-                    data = {
-                        'main_url': response.url,
-                        'data': product_listing,
-                        'next_page_url': response.css('a.s-pagination-next::attr(href)').get()
-                    }
-
-                    meta['data'] = data
-
-                    prompt = RULES.get('RULE_3').format(term, suggestions).strip()
-                    data = get_gpt_payload(prompt)
-                    yield scrapy.Request(
-                        url=API_URL_GPT,
-                        method='POST',
-                        headers=GPT_HEADERS,
-                        body=json.dumps(data),
-                        meta=meta,
-                        callback=self.parse_rule_3
-                    )
-            else:
-                self.logger.info(
-                    f"Rule 2 failed for term {term}. Total Items Results are more than 400.")
-                self.logs[term]['Rule 2'] = f'Failed: {term} has more than 400 items'
-                self.skipped_list.remove(term)
-                yield {term: f'Rule 2 Failed: {term} has more than 400 items'}
-                self.save_logs()
-                return
+                yield scrapy.Request(
+                    url=API_URL_GPT,
+                    method='POST',
+                    headers=GPT_HEADERS,
+                    body=get_gpt_payload(prompt),
+                    # passing all needed data to next method
+                    meta={'term': term, 'total_results': total_results, 'min_sale': min_sale,
+                          'searched_term': suggestions, 'data': {
+                            'main_url': response.url,
+                            'data': product_listing,
+                            'next_page_url': response.css('a.s-pagination-next::attr(href)').get()
+                        }},
+                    callback=self.parse_rule_3
+                )
+        elif total_results > 400:
+            self.logger.info(
+                f"Rule 2 failed for term {term}. Total Items Results are more than 400.")
+            self.logs[term]['Rule 2'] = f'Failed: {term} has more than 400 items'
+            self.skipped_list.remove(term)
+            yield {term: f'Rule 2 Failed: {term} has more than 400 items'}
+            self.save_logs()
+            return
         else:
             self.logger.info(
                 f"Rule 2 failed for term {term}. No Total Results are found.")
@@ -267,8 +259,7 @@ class AmazonSpider(scrapy.Spider):
             for product in product_listing[:15]:
                 # Formatting the RULE_3_1 with the joined string
                 prompt = RULES.get('RULE_3_1').format(product['name'], group_term).strip()
-                data = get_gpt_payload(prompt)
-                response = requests.post(API_URL_GPT, headers=GPT_HEADERS, data=json.dumps(data))
+                response = requests.post(API_URL_GPT, headers=GPT_HEADERS, data=get_gpt_payload(prompt))
                 gpt_response = response.json().get('choices', [{}])[0].get('message', {}).get('content', '')
                 if gpt_response == 'False':
                     self.logger.info(
@@ -282,7 +273,8 @@ class AmazonSpider(scrapy.Spider):
                 self.logger.info(
                     f"Rule 3 1 failed for term {group_term}. There are product lists more than 15 with the same topic.")
                 self.logger.info(f"Prompt: {prompt}")
-                self.logs[term]['Rule 3'] = f'Failed: {group_term}. There are product lists more than 15 with the same topic.'
+                self.logs[term][
+                    'Rule 3'] = f'Failed: {group_term}. There are product lists more than 15 with the same topic.'
                 self.skipped_list.remove(group_term)
                 yield {
                     group_term: f'Rule 3 Failed: {group_term}. There are product lists more than 15 with the same topic.'}
@@ -299,13 +291,11 @@ class AmazonSpider(scrapy.Spider):
         # meta['proxy'] = random.choice(PROXIES)
 
         prompt = RULES.get('RULE_3_2').format(group_term, product_listing[index]['name']).strip()
-        data = get_gpt_payload(prompt)
-
         yield scrapy.Request(
             url=API_URL_GPT,
             method='POST',
             headers=GPT_HEADERS,
-            body=json.dumps(data),
+            body=get_gpt_payload(prompt),
             meta=meta,
             callback=self.parse_rule_3_2
         )
@@ -368,12 +358,11 @@ class AmazonSpider(scrapy.Spider):
             meta['name_index'] = index
             meta['proxy'] = random.choice(PROXIES)
             prompt = RULES.get('RULE_3_2').format(group_term, product_listing[index]['name']).strip()
-            data = get_gpt_payload(prompt)
             yield scrapy.Request(
                 url=API_URL_GPT,
                 method='POST',
                 headers=GPT_HEADERS,
-                body=json.dumps(data),
+                body=get_gpt_payload(prompt),
                 meta=meta,
                 callback=self.parse_rule_3_2
             )
@@ -525,8 +514,9 @@ class AmazonSpider(scrapy.Spider):
                 bought_value = bought_items.split()[0].rstrip('+')
                 bought_value = convert_abbreviated_number(bought_value)
 
-            price = float(product.css("span.a-price > span.a-offscreen::text, span:contains('No featured offers available') + br +span.a-color-base::text").get('0').lstrip('$'))
-
+            price = float(product.css(
+                "span.a-price > span.a-offscreen::text, span:contains('No featured offers available') + br +span.a-color-base::text").get(
+                '0').lstrip('$'))
 
             url = product.css("h2 > a::attr(href)").get()
             if url in unique_urls:
