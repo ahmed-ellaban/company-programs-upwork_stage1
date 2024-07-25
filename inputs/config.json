@@ -1,7 +1,7 @@
 {
   "API_URL_GPT": "https://api.openai.com/v1/chat/completions",
   "BASE_URL": "https://www.amazon.com/",
-  "GPT_API_KEY": "sk-proj-SXKNTOQyrqn9h7rvOKnUT3BlbkFJTeAbD5OiOZDnevt5Bq5j",
+  "GPT_API_KEY": "sk-proj-H0zwxe2FKUNgsZSfUMfUT3BlbkFJHBtpgDFHaJsg5Q8oMuwU",
   "CONCURRENT_REQUESTS": 5,
   "RETRY_TIME": 5,
   "PROXIES_FILE_PATH": "inputs/proxies.txt",

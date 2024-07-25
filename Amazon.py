@@ -1,5 +1,4 @@
 import json
-import logging
 import random
 import re
 from urllib.parse import urljoin
@@ -54,16 +53,20 @@ class AmazonSpider(scrapy.Spider):
             for term in f.readlines():
                 term = term.lower().strip()
                 self.skipped_list.add(term)
-                prompt = RULES.get('RULE_5_6_9').format(term).strip()
-                data = get_gpt_payload(prompt)
-
-                yield scrapy.Request(
-                    url=API_URL_GPT,
-                    method='POST',
-                    headers=GPT_HEADERS,
-                    body=json.dumps(data),
-                    meta={'search_term': term}
-                )
+            #     prompt = RULES.get('RULE_5_6_9').format(term).strip()
+            #     data = get_gpt_payload(prompt)
+            #
+            #     yield scrapy.Request(
+            #         url=API_URL_GPT,
+            #         method='POST',
+            #         headers=GPT_HEADERS,
+            #         body=json.dumps(data),
+            #         meta={'search_term': term}
+            #     )
+                api_url = f"https://completion.amazon.com/api/2017/suggestions?limit=11&prefix={term}&suggestion-type=WIDGET&suggestion-type=KEYWORD&page-type=Search&alias=aps&site-variant=desktop&version=3&event=onkeypress&wc=&lop=en_US&last-prefix=ceramic%20fire%20balls&avg-ks-time=7481&fb=1&mid=ATVPDKIKX0DER&plain-mid=1&client-info=search-ui"
+                self.logs[term] = {}
+                yield scrapy.Request(api_url, meta={'term': term},
+                                     callback=self.parse_rule_1)
 
     def parse(self, response, **kwargs):
         """
@@ -73,15 +76,13 @@ class AmazonSpider(scrapy.Spider):
             :return:
         """
         term = response.meta.get('search_term')
-        print('analyzing : ' + term + ' ===============')
-
-        self.logs[term] = {}
+        self.logger.info('analyzing : ' + term + ' ===============')
 
         data = response.json()
         result = data.get('choices', [{}])[0].get('message', {}).get('content', '')
         if result == 'True':
             api_url = f"https://completion.amazon.com/api/2017/suggestions?limit=11&prefix={term}&suggestion-type=WIDGET&suggestion-type=KEYWORD&page-type=Search&alias=aps&site-variant=desktop&version=3&event=onkeypress&wc=&lop=en_US&last-prefix=ceramic%20fire%20balls&avg-ks-time=7481&fb=1&mid=ATVPDKIKX0DER&plain-mid=1&client-info=search-ui"
-            yield scrapy.Request(api_url, meta={'term': term, 'proxy': random.choice(PROXIES)},
+            yield scrapy.Request(api_url, meta={'term': term},
                                  callback=self.parse_rule_1)
         else:
             self.logs[term]['Rule 5-9'] = f"Failed: {result}"
@@ -94,7 +95,7 @@ class AmazonSpider(scrapy.Spider):
         try:
             data = json.loads(response.body)['suggestions']
         except:
-            logging.info("Couldn't get any suggestion.")
+            self.logger.info("Couldn't get any suggestion.")
             self.logs[term]['Rule 1'] = "Failed: Couldn't get any suggestion."
             self.skipped_list.remove(term)
             yield {term: "Rule 1 Failed: Couldn't get any suggestion."}
@@ -111,17 +112,17 @@ class AmazonSpider(scrapy.Spider):
                     matching_suggestions.append(value)
 
             if len(matching_suggestions) >= 2:
-                logging.info(f"Rule 1 passed for term {term}.")
+                self.logger.info(f"Rule 1 passed for term {term}.")
                 self.logs[term]['Rule 1'] = 'Passed'
                 url = f"https://www.amazon.com/s?k={term}"
-                meta = {'term': term, 'suggestions': suggestions, 'proxy': random.choice(PROXIES)}
+                meta = {'term': term, 'suggestions': suggestions}
 
-                logging.info(f"Scrapping about {term}...")
+                self.logger.info(f"Scrapping about {term}...")
 
                 yield scrapy.Request(url, meta=meta, callback=self.parse_rule_2, headers=HEADERS)
 
             else:
-                logging.info(f"Term {term} failed in Rule 1. {term} contains less than 2 in a suggestion.")
+                self.logger.info(f"Term {term} failed in Rule 1. {term} contains less than 2 in a suggestion.")
                 self.logs[term]['Rule 1'] = f'Failed: {term} contains less than 2 in a suggestion.'
                 self.skipped_list.remove(term)
                 yield {term: f'Rule 1 Failed: {term} contains less than 2 in a suggestion.'}
@@ -129,18 +130,17 @@ class AmazonSpider(scrapy.Spider):
                 return
 
         else:
-            logging.info(f"Term {term} failed in Rule 1. Suggestions are less than 3.")
+            self.logger.info(f"Term {term} failed in Rule 1. Suggestions are less than 3.")
             self.logs[term]['Rule 1'] = f'Failed: {term} suggestions are less than 3.'
             self.skipped_list.remove(term)
             yield {term: f'Rule 1 Failed: {term} suggestions are less than 3.'}
             self.save_logs()
 
     def parse_rule_2(self, response, **kwargs):
-        print('RULE 2 ==============')
         term = response.meta.get('term')
 
         if response.status != 200:
-            logging.info(
+            self.logger.info(
                 f"Rule 2 failed for term {term}. Status code are {response.status}.")
             self.logs[term]['Rule 2'] = f'Rule 2 failed for term {term}. Status code are {response.status}.'
             yield {term: f'Rule 2 failed for term {term}. Status code are {response.status}.'}
@@ -156,14 +156,13 @@ class AmazonSpider(scrapy.Spider):
             if total_results <= 400:
                 min_sale = minimum_total_sales_of_search_group_for_results(total_results)
                 meta = {'term': term, 'total_results': total_results, 'min_sale': min_sale,
-                        'searched_term': suggestions, 'proxy': random.choice(PROXIES)}
+                        'searched_term': suggestions}
                 self.logs[term]['Rule 2'] = 'Passed'
                 self.save_logs()
 
                 unique_urls = set()
                 product_listing = []
-                for product in response.css(
-                        'div[class="a-section a-spacing-small puis-padding-left-small puis-padding-right-small"],  div[data-csa-c-type="item"]'):
+                for product in response.css('div[class="a-section a-spacing-small puis-padding-left-small puis-padding-right-small"],  div[data-csa-c-type="item"]'):
                     if product.css('span:contains("Sponsored")'):
                         continue
 
@@ -173,12 +172,7 @@ class AmazonSpider(scrapy.Spider):
                         bought_value = bought_items.split()[0].rstrip('+')
                         bought_value = convert_abbreviated_number(bought_value)
 
-                    try:
-                        price = float(product.css(
-                            "span.a-price > span.a-offscreen::text, span:contains('No featured offers available') + br +span.a-color-base::text").get(
-                            '').lstrip('$'))
-                    except:
-                        price = 0
+                    price = float(product.css("span.a-price > span.a-offscreen::text, span:contains('No featured offers available') + br +span.a-color-base::text").get('0').lstrip('$'))
 
                     url = product.css("h2 > a::attr(href)").get()
                     if url in unique_urls:
@@ -212,7 +206,7 @@ class AmazonSpider(scrapy.Spider):
                         callback=self.parse_rule_3
                     )
             else:
-                logging.info(
+                self.logger.info(
                     f"Rule 2 failed for term {term}. Total Items Results are more than 400.")
                 self.logs[term]['Rule 2'] = f'Failed: {term} has more than 400 items'
                 self.skipped_list.remove(term)
@@ -220,7 +214,7 @@ class AmazonSpider(scrapy.Spider):
                 self.save_logs()
                 return
         else:
-            logging.info(
+            self.logger.info(
                 f"Rule 2 failed for term {term}. No Total Results are found.")
             self.logs[term]['Rule 2'] = f'Failed: {term}, No Total Results are found'
             self.skipped_list.remove(term)
@@ -229,14 +223,13 @@ class AmazonSpider(scrapy.Spider):
             return
 
     def parse_rule_3(self, response, **kwargs):
-        print('RULE 3 1 ==============')
         try:
             gpt_data = response.json()
             group_term = gpt_data.get('choices', [{}])[0].get('message', {}).get('content', '')
         except Exception as e:
-            print(f"Error parsing GPT response: {e}")
+            self.logger.error(f"Error parsing GPT response: {e}")
             return
-
+        term = response.meta.get('term')
         meta = response.meta.copy()
         data = response.meta.get('data')
         product_listing = data['data']
@@ -250,19 +243,18 @@ class AmazonSpider(scrapy.Spider):
                 response = requests.post(API_URL_GPT, headers=GPT_HEADERS, data=json.dumps(data))
                 gpt_response = response.json().get('choices', [{}])[0].get('message', {}).get('content', '')
                 if gpt_response == 'False':
-                    logging.info(
+                    self.logger.info(
                         f"Rule 3 1 success for term {group_term}.")
-                    self.logs[group_term]['Rule 3 1'] = f'Success: {group_term}.'
+                    self.logs[term]['Rule 3 1'] = f'Success: {group_term}.'
                     self.save_logs()
                     parse_result = True
                     break
 
-            if parse_result == False:
-                logging.info(
+            if not parse_result:
+                self.logger.info(
                     f"Rule 3 1 failed for term {group_term}. There are product lists more than 15 with the same topic.")
-                logging.info(f"Prompt: {prompt}")
-                self.logs[group_term][
-                    'Rule 3'] = f'Failed: {group_term}. There are product lists more than 15 with the same topic.'
+                self.logger.info(f"Prompt: {prompt}")
+                self.logs[term]['Rule 3'] = f'Failed: {group_term}. There are product lists more than 15 with the same topic.'
                 self.skipped_list.remove(group_term)
                 yield {
                     group_term: f'Rule 3 Failed: {group_term}. There are product lists more than 15 with the same topic.'}
@@ -270,13 +262,13 @@ class AmazonSpider(scrapy.Spider):
                 return
 
         except requests.RequestException as e:
-            print(f"Request failed: {e}")
+            self.logger.info(f"Request failed: {e}")
             return
 
         index = 0
         meta['name_index'] = index
         meta['group_term'] = group_term
-        meta['proxy'] = random.choice(PROXIES)
+        # meta['proxy'] = random.choice(PROXIES)
 
         prompt = RULES.get('RULE_3_2').format(group_term, product_listing[index]['name']).strip()
         data = get_gpt_payload(prompt)
@@ -291,7 +283,6 @@ class AmazonSpider(scrapy.Spider):
         )
 
     def parse_rule_3_2(self, response, **kwargs):
-
         try:
             gpt_data = response.json()
             result = gpt_data.get('choices', [{}])[0].get('message', {}).get('content', '')
@@ -324,7 +315,7 @@ class AmazonSpider(scrapy.Spider):
                 else:
                     next_page_url = urljoin(BASE_URL, next_page_url)
                     listing_meta = {'term': term, 'total_results': total_results, 'min_sale': min_sale,
-                                    'group_term': group_term, 'total_monthly_sale': 0, 'proxy': random.choice(PROXIES)}
+                                    'group_term': group_term, 'total_monthly_sale': 0}
                     yield scrapy.Request(next_page_url, meta=listing_meta, callback=self.parse_product_listing)
                     return
 
@@ -340,7 +331,7 @@ class AmazonSpider(scrapy.Spider):
             url = updated_data[0]['url']
             meta = {'term': term, 'total_results': total_results, 'min_sale': min_sale,
                     'group_term': group_term, 'data': updated_data_dict, 'index': 0,
-                    'total_monthly_sale': total_monthly_sale, 'proxy': random.choice(PROXIES)}
+                    'total_monthly_sale': total_monthly_sale}
             yield scrapy.Request(url, callback=self.parse_product_details_page, meta=meta)
 
             return
@@ -385,7 +376,7 @@ class AmazonSpider(scrapy.Spider):
             for bundle_url in bundle_urls:
                 meta = {'term': term, 'total_results': total_results, 'min_sale': min_sale,
                         'group_term': group_term, 'data': data, 'index': index,
-                        'total_monthly_sale': total_monthly_sale, 'bundle': True, 'proxy': random.choice(PROXIES)}
+                        'total_monthly_sale': total_monthly_sale, 'bundle': True}
                 yield response.follow(bundle_url, meta=meta, callback=self.parse_product_details_page)
         else:
             # Extract product details
@@ -447,7 +438,7 @@ class AmazonSpider(scrapy.Spider):
                 url = data['data'][index]['url']
                 meta = {'term': term, 'total_results': total_results, 'min_sale': min_sale,
                         'group_term': group_term, 'data': data, 'index': index,
-                        'total_monthly_sale': total_monthly_sale, 'proxy': random.choice(PROXIES)}
+                        'total_monthly_sale': total_monthly_sale}
 
                 yield response.follow(url, callback=self.parse_product_details_page, meta=meta)
 
@@ -461,7 +452,7 @@ class AmazonSpider(scrapy.Spider):
                     method='POST',
                     headers=GPT_HEADERS,
                     body=json.dumps(payload_data),
-                    meta={'term': term, 'data': data, 'proxy': random.choice(PROXIES)},
+                    meta={'term': term, 'data': data},
                     callback=self.parse_rule_4
                 )
 
@@ -473,7 +464,7 @@ class AmazonSpider(scrapy.Spider):
                     if next_page_url:
                         meta = {'term': term, 'total_results': total_results, 'min_sale': min_sale,
                                 'group_term': group_term, 'detail': True, 'total_monthly_sale': total_monthly_sale,
-                                'data': data, 'proxy': random.choice(PROXIES)}
+                                'data': data}
                         yield response.follow(next_page_url, callback=self.parse_product_listing, meta=meta)
                     else:
                         self.logs[term]['Rule 3'] = f"Failed: {term} doesn't match with min monthly sale."
@@ -506,12 +497,8 @@ class AmazonSpider(scrapy.Spider):
                 bought_value = bought_items.split()[0].rstrip('+')
                 bought_value = convert_abbreviated_number(bought_value)
 
-            try:
-                price = float(product.css(
-                    "span.a-price > span.a-offscreen::text, span:contains('No featured offers available') + br +span.a-color-base::text").get(
-                    '').lstrip('$'))
-            except:
-                price = 0
+            price = float(product.css("span.a-price > span.a-offscreen::text, span:contains('No featured offers available') + br +span.a-color-base::text").get('0').lstrip('$'))
+
 
             url = product.css("h2 > a::attr(href)").get()
             if url in unique_urls:
@@ -559,7 +546,7 @@ class AmazonSpider(scrapy.Spider):
             url = updated_data[0]['url']
             meta = {'term': term, 'total_results': total_results, 'min_sale': min_sale,
                     'group_term': group_term, 'data': updated_data_dict, 'index': index,
-                    'detail': True, 'total_monthly_sale': total_monthly_sale, 'proxy': random.choice(PROXIES)
+                    'detail': True, 'total_monthly_sale': total_monthly_sale
                     }
             yield response.follow(url, callback=self.parse_product_details_page, meta=meta)
 
