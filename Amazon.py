@@ -223,6 +223,34 @@ class AmazonSpider(scrapy.Spider):
             return
 
     def parse_rule_3(self, response, **kwargs):
+        """
+        Process and verify Rule 3.1 compliance for a given search term using GPT responses.
+
+        Steps:
+        1. Parse the response from GPT to obtain the 'group term'.
+        2. Extract the search term and product listings from the response metadata.
+        3. Check the first 15 product titles to see if they match the 'group term'.
+        4. If any product title does not match, Rule 3.1 succeeds and further processing continues.
+        5. If all product titles match, Rule 3.1 fails, indicating more than 15 relevant items are found.
+        6. If Rule 3.1 succeeds, proceed to Rule 3.2.
+
+        Parameters:
+        - response: The response object containing data from GPT and the product listings.
+        - **kwargs: Additional keyword arguments (not used in this function).
+
+        Key Variables:
+        - group_term: A term representing a group of listings that match the search term.
+        - term: The original search term.
+        - product_listing: List of product titles returned for the search term.
+        - prompt: The formatted prompt sent to GPT for validation of each product title.
+        - parse_result: Boolean flag indicating if Rule 3.1 was successful or not.
+
+        Exception Handling:
+        - Logs and handles errors encountered during parsing of GPT response or requests to GPT.
+
+        Usage:
+        - This function is used in the context of a Scrapy spider to process and validate search term relevance based on GPT's analysis.
+        """
         try:
             gpt_data = response.json()
             group_term = gpt_data.get('choices', [{}])[0].get('message', {}).get('content', '')
